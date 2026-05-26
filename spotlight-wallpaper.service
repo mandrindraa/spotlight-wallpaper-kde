@@ -1,0 +1,16 @@
+[Unit]
+Description=Custom Spotlight Wallpaper Changer
+# Wait until the graphical session is fully up so plasma-apply-wallpaperimage works
+After=plasma-plasmashell.service graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=oneshot
+# Forward the user's D-Bus session so plasma-apply-wallpaperimage can reach Plasma
+Environment=DISPLAY=:0
+# fish needs a login shell to pick up PATH from ~/.config/fish/config.fish
+ExecStart=/usr/bin/fish -l %h/.local/bin/spotlight-wallpaper.fish
+StandardOutput=journal
+StandardError=journal
+# Don't hard-fail the boot if the wallpaper script errors
+RemainAfterExit=no
