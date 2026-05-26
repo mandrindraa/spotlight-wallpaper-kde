@@ -1,0 +1,19 @@
+[Unit]
+Description=Custom Spotlight Wallpaper Changer
+After=plasma-plasmashell.service graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=oneshot
+# XDG_RUNTIME_DIR is needed by plasma-apply-wallpaperimage to find the D-Bus socket.
+# %t expands to the user's runtime directory (/run/user/UID) — no hardcoding needed.
+Environment=XDG_RUNTIME_DIR=%t
+Environment=DISPLAY=:0
+# Inherit the D-Bus session bus address from the runtime dir socket (standard path)
+ExecStart=/usr/bin/fish -l %h/.local/bin/spotlight-wallpaper.fish
+StandardOutput=journal
+StandardError=journal
+RemainAfterExit=no
+
+[Install]
+WantedBy=default.target
