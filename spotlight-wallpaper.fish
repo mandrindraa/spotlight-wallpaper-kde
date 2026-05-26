@@ -4,17 +4,14 @@
 # Downloads Windows Spotlight images (via Peapix public API) and sets them
 # as the KDE Plasma desktop wallpaper.  Works offline by falling back to the
 # local cache.
-#
-# Install:  cp spotlight-wallpaper.fish ~/.local/bin/
-#           chmod +x ~/.local/bin/spotlight-wallpaper.fish
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Config ────────────────────────────────────────────────────────────────────
-set CACHE_DIR   "$HOME/.local/share/spotlight-wallpapers"
-set STATE_FILE  "$HOME/.local/share/spotlight-wallpapers/.state"   # last-used filename
-set API_URL     "https://peapix.com/spotlight/feed?n=8"
-set MAX_CACHED  30          # keep at most this many images; oldest deleted first
-set LOG_PREFIX  "[spotlight]"
+set CACHE_DIR  "$HOME/.local/share/spotlight-wallpapers"
+set STATE_FILE "$HOME/.local/share/spotlight-wallpapers/.state"
+set API_URL    "https://peapix.com/spotlight/feed?n=8"
+set MAX_CACHED 30
+set LOG_PREFIX "[spotlight]"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 function log
@@ -22,16 +19,34 @@ function log
 end
 
 function internet_available
-    # Quick DNS check – no full download needed
-    curl -sf --max-time 5 --head "https://peapix.com" >/dev/null 2>&1
+    # Use a DNS lookup rather than HTTP — immune to server rejecting HEAD.
+    # `getent hosts` uses the system resolver and returns 0 on success.
+    # Fallback: try a plain TCP connect on port 80 via curl if getent missing.
+    if command -q getent
+        getent hosts peapix.com >/dev/null 2>/dev/null
+        return $status
+    else
+        # curl --connect-timeout, no data transfer, just TCP handshake
+        curl --silent --connect-timeout 5 --max-time 6 \
+             --output /dev/null \
+             "https://peapix.com"
+        return $status
+    end
 end
 
 function set_wallpaper
     set img $argv[1]
     if test -f "$img"
-        plasma-apply-wallpaperimage "$img" >/dev/null 2>&1
-        and log "Wallpaper set → $(basename $img)"
-        or log "WARNING: plasma-apply-wallpaperimage failed for $img"
+        # plasma-apply-wallpaperimage needs XDG_RUNTIME_DIR to reach D-Bus
+        if test -z "$XDG_RUNTIME_DIR"
+            set -x XDG_RUNTIME_DIR /run/user/(id -u)
+        end
+        plasma-apply-wallpaperimage "$img" >/dev/null 2>/dev/null
+        if test $status -eq 0
+            log "Wallpaper set → "(basename "$img")
+        else
+            log "WARNING: plasma-apply-wallpaperimage failed for $img"
+        end
     else
         log "ERROR: image file not found: $img"
     end
@@ -54,7 +69,7 @@ function evict_old_images
         set surplus (math $count - $MAX_CACHED)
         for i in (seq 1 $surplus)
             set victim $files[(math $count - $i + 1)]
-            log "Evicting old image: $(basename $victim)"
+            log "Evicting old image: "(basename "$victim")
             rm -f "$victim"
         end
     end
@@ -63,41 +78,45 @@ end
 # ── Main ──────────────────────────────────────────────────────────────────────
 mkdir -p "$CACHE_DIR"
 
+log "Checking connectivity…"
+
 if internet_available
     log "Online – fetching Spotlight feed…"
 
-    set api_response (curl -sf --max-time 15 \
-        -A "Mozilla/5.0 (X11; Linux x86_64)" \
+    set api_response (curl --silent --max-time 15 \
+        --user-agent "Mozilla/5.0 (X11; Linux x86_64)" \
         "$API_URL" 2>/dev/null)
 
     if test -z "$api_response"
         log "WARNING: empty API response, falling back to cache"
         set use_cache true
     else
-        # Parse the JSON array with python (always available on CachyOS)
         set urls (echo $api_response | python3 -c "
 import sys, json
-data = json.load(sys.stdin)
-for item in data:
-    url = item.get('fullUrl','')
-    if url:
-        print(url)
+try:
+    data = json.load(sys.stdin)
+    for item in data:
+        url = item.get('fullUrl','')
+        if url:
+            print(url)
+except Exception as e:
+    sys.stderr.write(str(e)+'\n')
 " 2>/dev/null)
 
         if test (count $urls) -eq 0
             log "WARNING: no URLs parsed from API, falling back to cache"
             set use_cache true
         else
-            # Download any images we don't already have
-            set newly_downloaded ""
+            set newly_downloaded
             for url in $urls
-                # Use the last path segment (hex hash) as filename
-                set fname (string replace -ra '.*/' '' $url | string replace -ra '[^a-zA-Z0-9_.]' '_')
-                set fname (string replace -r '_jpg.*' '.jpg' $fname)
+                set fname (string replace --regex '.*/' '' $url \
+                           | string replace --regex '[^a-zA-Z0-9_.]' '_')
+                set fname (string replace --regex '_jpg.*' '.jpg' $fname)
                 set dest "$CACHE_DIR/$fname"
                 if not test -f "$dest"
                     log "Downloading: $fname"
-                    curl -sf --max-time 30 -L -o "$dest" "$url" 2>/dev/null
+                    curl --silent --max-time 30 --location \
+                         --output "$dest" "$url" 2>/dev/null
                     if test $status -eq 0
                         set newly_downloaded $newly_downloaded $dest
                     else
@@ -109,7 +128,6 @@ for item in data:
 
             evict_old_images
 
-            # Prefer a freshly downloaded image; fall back to any cached one
             if test (count $newly_downloaded) -gt 0
                 set chosen $newly_downloaded[1]
             else
@@ -118,7 +136,7 @@ for item in data:
 
             if test -n "$chosen"
                 set_wallpaper "$chosen"
-                echo (basename $chosen) >"$STATE_FILE"
+                echo (basename "$chosen") >"$STATE_FILE"
             else
                 log "ERROR: nothing to display"
                 exit 1
@@ -135,9 +153,9 @@ if set -q use_cache
     set chosen (pick_random_cached)
     if test -n "$chosen"
         set_wallpaper "$chosen"
-        echo (basename $chosen) >"$STATE_FILE"
+        echo (basename "$chosen") >"$STATE_FILE"
     else
-        log "ERROR: no cached images available and offline – nothing to do"
+        log "ERROR: no cached images and offline – nothing to do"
         exit 1
     end
 end
